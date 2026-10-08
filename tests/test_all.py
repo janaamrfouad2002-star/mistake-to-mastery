@@ -1,6 +1,6 @@
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from sympy import solve
-
+from app.engine import Extracted, analyse, make_twin
 from app import core, llm
 from app.core import (first_wrong_step, diagnose, make_problem,
                       parse_equation, x, record, mistake_map)
@@ -57,3 +57,60 @@ def test_llm_falls_back_to_templates(monkeypatch):
     monkeypatch.setattr(llm, "_get_model", lambda: None)
     out = llm.explain_with_llm("a", "b", "FORGOT_TO_DISTRIBUTE")
     assert "brackets" in out
+
+
+def test_engine_algebra():
+    r = analyse(Extracted(subject="algebra", steps=["2x + 3 = 11", "2x = 14", "x = 7"]))
+    assert r["tag"] == "SIGN_ERROR_MOVING_TERM"
+
+
+def test_derivative_correct():
+    r = analyse(Extracted(subject="derivative", expression="x^3", student_answer="3x^2"))
+    assert r["status"] == "correct"
+
+
+def test_derivative_power_not_reduced():
+    r = analyse(Extracted(subject="derivative", expression="x^3", student_answer="3x^3"))
+    assert r["tag"] == "POWER_NOT_REDUCED"
+
+
+def test_derivative_forgot_chain_rule():
+    r = analyse(Extracted(subject="derivative", expression="sin(2x)", student_answer="cos(2x)"))
+    assert r["tag"] == "FORGOT_CHAIN_RULE"
+
+
+def test_integral_no_division():
+    r = analyse(Extracted(subject="integral", expression="x^2", student_answer="x^3 + C"))
+    assert r["tag"] == "FORGOT_TO_DIVIDE_BY_NEW_POWER"
+
+
+def test_integral_forgot_plus_c():
+    r = analyse(Extracted(subject="integral", expression="2x", student_answer="x^2"))
+    assert r["tag"] == "FORGOT_PLUS_C"
+
+
+def test_integral_correct():
+    r = analyse(Extracted(subject="integral", expression="2x", student_answer="x^2 + C"))
+    assert r["status"] == "correct"
+
+
+def test_calculus_twins_can_be_checked():
+    for kind, tag in [("derivative", "FORGOT_CHAIN_RULE"), ("integral", "SIGN_ERROR")]:
+        p = make_twin(kind, tag)
+        r = analyse(Extracted(subject=kind, expression=p, student_answer="0"))
+        assert r["status"] == "wrong"
+
+
+def test_extract_offline_fallback(monkeypatch):
+    monkeypatch.setattr(llm, "_get_model", lambda: None)
+    ex = llm.extract("2x + 3 = 11\n2x = 14")
+    assert ex.subject == "algebra" and len(ex.steps) == 2
+
+def test_question_only_gets_solved():
+    r = analyse(Extracted(subject="derivative", expression="x^3"))
+    assert r["status"] == "solved" and r["answer"] == "3*x**2"
+
+
+def test_integral_question_only():
+    r = analyse(Extracted(subject="integral", expression="2x"))
+    assert r["status"] == "solved" and "x**2" in r["answer"]
