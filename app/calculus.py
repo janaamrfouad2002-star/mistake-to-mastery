@@ -8,8 +8,21 @@ from sympy.parsing.sympy_parser import parse_expr
 from app.core import T, x
 
 
+def clean(s: str) -> str:
+    """Fix photo symbols, add brackets to 'cos x', remove 'dy/dx =' prefixes."""
+    s = s.strip()
+    for a, b in {"−": "-", "–": "-", "×": "*", "·": "*", "÷": "/",
+                 "²": "^2", "³": "^3", "$": "", "\\": ""}.items():
+        s = s.replace(a, b)
+    s = re.sub(r"\b(sin|cos|tan|ln|exp)\s+([a-z0-9]+)", r"\1(\2)", s)
+    s = re.sub(r"^\s*(dy\s*/\s*dx|d\s*/\s*dx|f\s*'\s*\(x\)|y\s*')\s*=", "", s)
+    if "=" in s:
+        s = s.split("=")[-1]
+    return s.strip()
+
+
 def parse(s: str):
-    return parse_expr(s.replace("^", "**"), transformations=T)
+    return parse_expr(clean(s).replace("^", "**"), transformations=T)
 
 
 def _coef_power(f):
@@ -46,6 +59,15 @@ def d_forgot_chain_rule(f):          # sin(2x) -> cos(2x), (3x+1)^4 -> 4(3x+1)^3
         return f.exp * f.base ** (f.exp - 1)
 
 
+def d_forgot_product_rule(f):        # u*v -> u'*v'  (differentiated each factor and multiplied)
+    if f.is_Mul:
+        factors = [a for a in f.args if a.has(x)]
+        if len(factors) == 2:
+            u, v = factors
+            const = f / (u * v)
+            return const * u.diff(x) * v.diff(x)
+
+
 # ---------- integral bugs ----------
 
 def i_no_division(f):                # x^2 -> x^3
@@ -67,6 +89,7 @@ D_BUGS = {
     "POWER_NOT_REDUCED": d_power_not_reduced,
     "FORGOT_COEFFICIENT": d_forgot_coefficient,
     "FORGOT_CHAIN_RULE": d_forgot_chain_rule,
+    "FORGOT_PRODUCT_RULE": d_forgot_product_rule,
 }
 I_BUGS = {
     "FORGOT_TO_DIVIDE_BY_NEW_POWER": i_no_division,
@@ -89,7 +112,7 @@ def _same(a, b, up_to_constant):
 def check(kind: str, expression: str, answer: str) -> dict:
     """kind is 'derivative' or 'integral'."""
     f = parse(expression)
-    text, has_c = _strip_c(answer)
+    text, has_c = _strip_c(clean(answer))
     s = parse(text)
     prev = ("derivative of " if kind == "derivative" else "integral of ") + expression
 
@@ -122,7 +145,11 @@ def check(kind: str, expression: str, answer: str) -> dict:
 def make_problem(kind: str, tag: str) -> str:
     a, b, n = random.randint(2, 6), random.randint(1, 5), random.randint(2, 5)
     if kind == "derivative":
-        return f"({a}x + {b})^{n}" if tag == "FORGOT_CHAIN_RULE" else f"{a}x^{n}"
+        if tag == "FORGOT_CHAIN_RULE":
+            return f"({a}x + {b})^{n}"
+        if tag == "FORGOT_PRODUCT_RULE":
+            return f"x^{n} sin(x)"
+        return f"{a}x^{n}"
     if tag == "SIGN_ERROR":
         return random.choice(["sin(x)", "cos(x)"])
     return f"{a}x^{n}"
@@ -138,6 +165,10 @@ EXPLANATIONS = {
     "FORGOT_CHAIN_RULE": (
         "When one function sits inside another, you also multiply by the derivative of the inside part.",
         "What is the derivative of the inside part?"),
+    "FORGOT_PRODUCT_RULE": (
+        "For two functions multiplied together, you can't differentiate each and multiply. "
+        "The product rule is: (first)' x second + first x (second)'.",
+        "What are the two terms you get when you apply the product rule to u times v?"),
     "FORGOT_TO_DIVIDE_BY_NEW_POWER": (
         "Integrating raises the power by 1 and then divides by that new power.",
         "If you differentiate your answer, do you get the original back?"),

@@ -1,12 +1,14 @@
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from sympy import solve
-from app.engine import Extracted, analyse, make_twin
+
 from app import core, llm
 from app.core import (first_wrong_step, diagnose, make_problem,
                       parse_equation, x, record, mistake_map)
+from app.engine import Extracted, analyse, make_twin
+from app.science import check_balance, check_calc, balance_equation
 
 
-# ---- checker and bug library ----
+# ---- algebra checker and bug library ----
 def test_sign_error():
     steps = ["2x + 3 = 11", "2x = 14", "x = 7"]
     i = first_wrong_step(steps)
@@ -46,19 +48,32 @@ def test_memory(tmp_path, monkeypatch):
     assert mistake_map("jana")[0][2] == 1
 
 
-# ---- AI layer, with the Gemini connection replaced by a fake ----
+# ---- AI layer, with the real connection replaced by a fake ----
 def test_llm_uses_model_when_available(monkeypatch):
     monkeypatch.setattr(llm, "_get_model",
-                        lambda: FakeListChatModel(responses=["Fake Gemini hint"]))
-    assert llm.explain_with_llm("a", "b", "SIGN_ERROR_MOVING_TERM") == "Fake Gemini hint"
+                        lambda *a, **k: FakeListChatModel(responses=["Fake hint"]))
+    assert llm.explain_with_llm("a", "b", "SIGN_ERROR_MOVING_TERM") == "Fake hint"
 
 
 def test_llm_falls_back_to_templates(monkeypatch):
-    monkeypatch.setattr(llm, "_get_model", lambda: None)
+    monkeypatch.setattr(llm, "_get_model", lambda *a, **k: None)
     out = llm.explain_with_llm("a", "b", "FORGOT_TO_DISTRIBUTE")
     assert "brackets" in out
 
 
+def test_extract_offline_fallback(monkeypatch):
+    monkeypatch.setattr(llm, "_get_model", lambda *a, **k: None)
+    ex = llm.extract("2x + 3 = 11\n2x = 14")
+    assert ex.subject == "algebra" and len(ex.steps) == 2
+
+
+def test_extract_offline_derivative(monkeypatch):
+    monkeypatch.setattr(llm, "_get_model", lambda *a, **k: None)
+    ex = llm.extract("what is the derivative of x^3")
+    assert ex.subject == "derivative" and ex.expression == "x^3"
+
+
+# ---- engine: algebra and calculus ----
 def test_engine_algebra():
     r = analyse(Extracted(subject="algebra", steps=["2x + 3 = 11", "2x = 14", "x = 7"]))
     assert r["tag"] == "SIGN_ERROR_MOVING_TERM"
@@ -101,11 +116,6 @@ def test_calculus_twins_can_be_checked():
         assert r["status"] == "wrong"
 
 
-def test_extract_offline_fallback(monkeypatch):
-    monkeypatch.setattr(llm, "_get_model", lambda: None)
-    ex = llm.extract("2x + 3 = 11\n2x = 14")
-    assert ex.subject == "algebra" and len(ex.steps) == 2
-
 def test_question_only_gets_solved():
     r = analyse(Extracted(subject="derivative", expression="x^3"))
     assert r["status"] == "solved" and r["answer"] == "3*x**2"
@@ -114,3 +124,43 @@ def test_question_only_gets_solved():
 def test_integral_question_only():
     r = analyse(Extracted(subject="integral", expression="2x"))
     assert r["status"] == "solved" and "x**2" in r["answer"]
+
+
+def test_plain_arithmetic_is_not_algebra():
+    r = analyse(Extracted(subject="algebra", steps=["2+2"]))
+    assert r["status"] == "solved" and r["answer"] == "4"
+
+
+# ---- chemistry and physics ----
+def test_chem_unbalanced():
+    assert check_balance("H2 + O2 -> H2O")["tag"] == "ATOMS_NOT_CONSERVED"
+
+
+def test_chem_balanced():
+    assert check_balance("2H2 + O2 -> 2H2O")["status"] == "correct"
+
+
+def test_balance_solver():
+    assert balance_equation("C3H8 + O2 -> CO2 + H2O") == "C3H8 + 5O2 -> 3CO2 + 4H2O"
+
+
+def test_physics_correct():
+    assert check_calc("20 m / (4 s)", "5 m/s")["status"] == "correct"
+
+
+def test_physics_missing_units():
+    assert check_calc("20 m / (4 s)", "5")["tag"] == "WRONG_UNITS"
+
+
+def test_physics_conversion():
+    assert check_calc("2 km", "2 m")["tag"] == "UNIT_CONVERSION_ERROR"
+
+    from app.extras import detect_language
+
+
+def test_detect_languages():
+    assert detect_language("ما مشتقة x^2؟") == "Arabic"
+    assert detect_language("x^2 का अवकलज क्या है?") == "Hindi"
+    assert detect_language("Quelle est la dérivée de x^2 ?") == "French"
+    assert detect_language("what is the derivative of x^2") == "English"
+    assert detect_language("2x + 3 = 11") is None
